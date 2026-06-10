@@ -12,7 +12,12 @@ import {
   registerSpotLight,
   RigidBody,
 } from './components';
-import { registerLandmark, spawnShaftHall } from './chunks/worldgen';
+import {
+  durinsBridge,
+  mazarbulChamber,
+  registerLandmark,
+  spawnShaftHall,
+} from './chunks/worldgen';
 import { createCameraSystem } from './systems/CameraSystem';
 import { createChunkManagerSystem } from './systems/ChunkManagerSystem';
 import { createInputSystem } from './systems/InputSystem';
@@ -29,6 +34,7 @@ async function main(): Promise<void> {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   document.body.appendChild(renderer.domElement);
   await renderer.init();
+  renderer.setClearColor(0x000000, 1); // the void is pure black, same as the fog
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(
@@ -78,9 +84,13 @@ async function main(): Promise<void> {
     return eid;
   }
 
-  // Floors and their colliders now stream in via the ChunkManagerSystem; the
-  // spawn chunk is a registered landmark with a daylight shaft over origin.
+  // Floors and their colliders stream in via the ChunkManagerSystem.
+  // Landmarks near spawn: the shaft hall at origin, the Chamber of Mazarbul
+  // 64 m east, and Durin's Bridge over the Black Chasm 128 m north (-Z),
+  // past the biome shift into the Lower Deeps.
   registerLandmark(0, 0, spawnShaftHall);
+  registerLandmark(2, 0, mazarbulChamber);
+  registerLandmark(0, -4, durinsBridge);
 
   // A lone cube suspended in the dark — falls through the spawn shaft.
   const cube = new THREE.Mesh(
@@ -96,10 +106,11 @@ async function main(): Promise<void> {
   );
 
   // --- Player ---
-  // Dynamic capsule with rotations locked so physics can't tip it over, and
-  // high linear damping so releasing the keys stops the walk dead.
+  // Dynamic capsule with rotations locked so physics can't tip it over.
+  // No linear damping: stopping is handled in PlayerMovementSystem so that
+  // gravity stays untouched and chasm falls accelerate for real.
   const playerBody = physics.createRigidBody(
-    RAPIER.RigidBodyDesc.dynamic().setTranslation(0, 1.4, 8).setLinearDamping(10),
+    RAPIER.RigidBodyDesc.dynamic().setTranslation(0, 1.4, 8),
   );
   playerBody.lockRotations(true, true);
   physics.createCollider(RAPIER.ColliderDesc.capsule(0.75, 0.5), playerBody);

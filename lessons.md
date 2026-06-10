@@ -72,3 +72,26 @@ count never touches the lighting budget. The only real lights are the near-zero 
 and the player flashlight. Also: this tsconfig sets `erasableSyntaxOnly`, which forbids
 TS enums and constructor parameter properties — use `as const` objects and explicit field
 assignment.
+
+## Correction: linear damping was wrong for character control
+Rapier's linear damping is all-axis — at damping 10 the player's terminal fall speed was
+g/10 ≈ 1 m/s, which would have made the Black Chasm a gentle elevator. Stopping now lives
+in PlayerMovementSystem (horizontal velocity × 0.75 per tick when no keys are held, y
+untouched), the body has zero damping, and falls accelerate for real. Same stop feel,
+honest gravity.
+
+## Black fog must be exponential, not linear
+Linear fog reads as a milky grey wall. `FogExp2` locked to pure black (background and
+clear colour identical) decays luminance organically — light failing, not fog rolling in.
+Density 0.022: ~15 % loss at 20 m (flashlight range stays readable), ~98 % gone by 90 m,
+just inside the 96 m chunk ring. Per-instance flicker belongs on the GPU: the magma glow
+multiplies its gradient by a two-sine TSL `time` node — the light dances with zero CPU
+work and no per-frame buffer writes.
+
+## One generic unit-cube pool covers most masonry
+Walls, alcove piers, lintels, the stone door, and Durin's Bridge deck are all the same
+`slab` pool (unit cube, base at y = 0) scaled per instance — landmark variety does not
+mean new pools. Holes in the world are made by *withholding* colliders: chasm chunks lay
+two floor slabs and leave the gap empty, so falling is free. Wide-but-thin colliders
+(bridge decks) rotate via `ColliderDesc.setRotation` to match their visual matrix exactly
+— derive both from the same transform parameters or they will drift.

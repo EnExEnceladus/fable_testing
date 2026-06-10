@@ -17,6 +17,7 @@ import {
 const LOAD_RADIUS = 3; // chunks; 3 × 32 m = 96 m — past the fog wall, so pop-in is invisible
 const UNLOAD_RADIUS = 4; // hysteresis ring: no load/unload thrash while straddling a seam
 const MAX_LOADS_PER_TICK = 2; // amortise generation so a ring of new chunks never spikes a frame
+const WALL_THICKNESS = 1.2;
 
 /** Per-chunk bookkeeping that cannot live in SoA components: which pool
  *  slots the chunk owns. The Rapier body travels on the chunk entity's
@@ -41,6 +42,7 @@ export function createChunkManagerSystem(physics: RAPIER.World, scene: THREE.Sce
   const mat = new THREE.Matrix4();
   const pos = new THREE.Vector3();
   const rot = new THREE.Quaternion();
+  const eul = new THREE.Euler();
   const scl = new THREE.Vector3();
   const tint = new THREE.Color();
   const stale: number[] = [];
@@ -63,48 +65,127 @@ export function createChunkManagerSystem(physics: RAPIER.World, scene: THREE.Sce
     const ox = cx * CHUNK_SIZE;
     const oz = cz * CHUNK_SIZE;
 
+    /** Instance an element; rotation is yaw-then-pitch, scale per axis. */
     const place = (
       pool: InstancePool,
       x: number,
+      y: number,
       z: number,
-      girth: number,
+      sx: number,
+      sy: number,
+      sz: number,
+      yaw = 0,
+      pitch = 0,
       color?: THREE.Color,
     ): void => {
-      mat.compose(pos.set(ox + x, 0, oz + z), rot, scl.set(girth, 1, girth));
+      rot.setFromEuler(eul.set(pitch, yaw, 0, 'YXZ'));
+      mat.compose(pos.set(ox + x, y, oz + z), rot, scl.set(sx, sy, sz));
       const slot = pool.alloc(mat, color);
       if (slot !== -1) record.allocations.push([pool, slot]);
     };
 
-    const columnCollider = (x: number, z: number, girth: number): void => {
-      physics.createCollider(
-        RAPIER.ColliderDesc.cuboid(1.5 * girth, HALL_HEIGHT / 2, 1.5 * girth)
-          .setTranslation(ox + x, HALL_HEIGHT / 2, oz + z),
-        body,
-      );
+    /** Static cuboid collider (half-extents), optionally rotated. */
+    const collide = (
+      x: number,
+      y: number,
+      z: number,
+      hx: number,
+      hy: number,
+      hz: number,
+      yaw = 0,
+      pitch = 0,
+    ): void => {
+      const desc = RAPIER.ColliderDesc.cuboid(hx, hy, hz).setTranslation(ox + x, y, oz + z);
+      if (yaw !== 0 || pitch !== 0) {
+        rot.setFromEuler(eul.set(pitch, yaw, 0, 'YXZ'));
+        desc.setRotation({ x: rot.x, y: rot.y, z: rot.z, w: rot.w });
+      }
+      physics.createCollider(desc, body);
     };
 
     const builder: ChunkBuilder = {
-      floorTile: (x, z, shade) =>
-        place(pools.floor, x, z, 1, tint.setScalar(0.05 + shade * 0.05)),
-      floorSlab: (x, z, w, d) => {
-        physics.createCollider(
-          RAPIER.ColliderDesc.cuboid(w / 2, 0.25, d / 2)
-            .setTranslation(ox + x + w / 2, -0.25, oz + z + d / 2),
-          body,
+      floorTile: (x, z, shade, jitter = 0) => {
+        // Fracture damage is visual only — the collider slab stays flat.
+        place(
+          pools.floor,
+          x,
+          -jitter * 0.1,
+          z,
+          1,
+          1,
+          1,
+          0,
+          jitter * 0.035,
+          tint.setScalar(0.05 + shade * 0.05),
         );
       },
-      runeTile: (x, z) => place(pools.rune, x, z, 1),
+      floorSlab: (x, z, w, d) => collide(x + w / 2, -0.25, z + d / 2, w / 2, 0.25, d / 2),
+      runeTile: (x, z) => place(pools.rune, x, 0, z, 1, 1, 1),
+      grate: (x, z) => place(pools.grate, x, 0, z, 1, 1, 1),
+      mithrilVein: (x, z, yaw, length) => place(pools.mithril, x, 0, z, 1, 1, length, yaw),
+      wall: (x, z, length, axis, height = HALL_HEIGHT, y = 0) => {
+        if (length <= 0) return;
+        const alongX = axis === 'x';
+        const cxm = x + (alongX ? length / 2 : 0);
+        const czm = z + (alongX ? 0 : length / 2);
+        place(
+          pools.slab,
+          cxm,
+          y,
+          czm,
+          alongX ? length : WALL_THICKNESS,
+          height,
+          alongX ? WALL_THICKNESS : length,
+          0,
+          0,
+          tint.setScalar(0.05),
+        );
+        collide(
+          cxm,
+          y + height / 2,
+          czm,
+          (alongX ? length : WALL_THICKNESS) / 2,
+          height / 2,
+          (alongX ? WALL_THICKNESS : length) / 2,
+        );
+      },
       boleColumn: (x, z, girth) => {
-        place(pools.bole, x, z, girth, tint.setScalar(0.14 + girth * 0.06));
-        columnCollider(x, z, girth);
+        place(pools.bole, x, 0, z, girth, 1, girth, 0, 0, tint.setScalar(0.14 + girth * 0.06));
+        collide(x, HALL_HEIGHT / 2, z, 1.5 * girth, HALL_HEIGHT / 2, 1.5 * girth);
       },
       obeliskColumn: (x, z, girth) => {
-        place(pools.obelisk, x, z, girth, tint.setScalar(0.12 + girth * 0.06));
-        columnCollider(x, z, girth);
+        place(pools.obelisk, x, 0, z, girth, 1, girth, 0, 0, tint.setScalar(0.12 + girth * 0.06));
+        collide(x, HALL_HEIGHT / 2, z, 1.5 * girth, HALL_HEIGHT / 2, 1.5 * girth);
       },
-      lightShaft: (x, z) => {
-        place(pools.beam, x, z, 1);
-        place(pools.glow, x, z, 1);
+      brokenColumn: (x, z, girth, lean, yaw) => {
+        place(pools.stump, x, 0, z, girth, 1, girth, yaw, lean, tint.setScalar(0.13 + girth * 0.05));
+        collide(x, 1.8, z, 1.6 * girth, 1.8, 1.6 * girth);
+      },
+      rubble: (x, z, size, squash, yaw, shade) =>
+        place(pools.rubble, x, 0, z, size, size * squash, size * 0.85, yaw, 0, tint.setScalar(0.03 + shade * 0.08)),
+      archFragment: (x, z, yaw, lean) =>
+        place(pools.arch, x, 0.4, z, 1, 1, 1, yaw, lean, tint.setScalar(0.1)),
+      lightShaft: (x, z, pitch = 0, yaw = 0) => {
+        place(pools.beam, x, 0, z, 1, 1, 1, yaw, pitch);
+        place(pools.glow, x, 0, z, 1, 1, 1, 0, 0, tint.setHex(0x4a6fa8));
+      },
+      magmaFissure: (x, z, yaw, length) => {
+        place(pools.fissure, x, 0, z, 1, 1, length, yaw);
+        place(pools.magmaGlow, x, 0, z, 1, 1, Math.max(1, length / 4), yaw);
+        place(pools.glow, x, 0, z, 1.4, 1, Math.max(1, length / 3), yaw, 0, tint.setHex(0xb33a10));
+      },
+      tomb: (x, z) => {
+        place(pools.tomb, x, 0, z, 1, 1, 1);
+        collide(x, 0.75, z, 1.3, 0.75, 0.65);
+      },
+      chest: (x, z, yaw) => place(pools.chest, x, 0, z, 1, 1, 1, yaw),
+      stoneDoor: (x, z, yaw) => {
+        place(pools.slab, x, 0, z, 4.6, 6, 0.5, yaw, 0, tint.setScalar(0.07));
+        collide(x, 3, z, 2.3, 3, 0.25, yaw);
+      },
+      bridgeSegment: (x, y, z, pitch) => {
+        place(pools.slab, x, y - 0.5, z, 2.6, 0.5, 2.8, 0, pitch, tint.setScalar(0.16));
+        collide(x, y - 0.25, z, 1.3, 0.25, 1.4, 0, pitch);
       },
     };
 
