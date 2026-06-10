@@ -40,3 +40,35 @@ The player capsule is dynamic with `lockRotations(true, true)` so collisions can
 `setLinvel` (preserving vertical velocity for gravity) only while keys are held, and
 linear damping ≈ 10 so releasing the keys stops the walk without ice-skating. Damping
 applies to all axes, so very high values would also slow falling.
+
+## Chunk memory architecture: fixed-cap instance pools + free lists
+The streamed world renders through six `InstancePool`s (floor/rune/bole/obelisk/beam/glow)
+— one InstancedMesh and one draw call each, GPU buffers allocated once at a hard cap
+(floor: 10k instances; all pools ≈ 1 MB of per-instance data), so chunk churn never grows
+VRAM. Slots are free-list allocated; released slots collapse to zero scale instead of
+compacting `count`, trading a few degenerate vertex invocations for zero slot-remap
+bookkeeping. Pools set `frustumCulled = false` — instances surround the player, and
+whole-mesh culling would blink the entire pool out.
+
+## Chunks are ECS entities; their variable-size bookkeeping is not
+Each loaded chunk is an entity with Chunk (grid coords + biome tag) and RigidBody (one
+fixed body whose removal cascades to all its colliders). The list of pool slots a chunk
+owns is variable-length and lives in a Map keyed by entity id — SoA component arrays only
+hold numbers. Unload = release slots, remove body, removeEntity; collect entities first,
+then remove — calling removeEntity while iterating a query mutates its dense array.
+
+## Streaming discipline: deterministic seeds, hysteresis, amortisation, fog
+Chunks regenerate identically from a spatial-hash seed (no persistence needed). Load
+radius 3 < unload radius 4 prevents seam thrash; loads run nearest-ring-first at ≤ 2 per
+tick so the floor under the player always exists before the horizon fills in and no frame
+spikes; the fog wall (85 m) sits inside the load ring (96 m) so pop-in is invisible.
+Colliders are a CPU budget: one slab per chunk floor plus column bounds — never per-tile,
+never for unloaded chunks, never for décor (runes, beams, glows).
+
+## Scale lighting by faking it: shafts are additive geometry, not lights
+Daylight shafts are instanced open cylinders with a TSL `opacityNode` vertical gradient
+(additive, no depth write) plus an additive floor-glow disc — zero real lights, so shaft
+count never touches the lighting budget. The only real lights are the near-zero ambient
+and the player flashlight. Also: this tsconfig sets `erasableSyntaxOnly`, which forbids
+TS enums and constructor parameter properties — use `as const` objects and explicit field
+assignment.

@@ -12,7 +12,9 @@ import {
   registerSpotLight,
   RigidBody,
 } from './components';
+import { registerLandmark, spawnShaftHall } from './chunks/worldgen';
 import { createCameraSystem } from './systems/CameraSystem';
+import { createChunkManagerSystem } from './systems/ChunkManagerSystem';
 import { createInputSystem } from './systems/InputSystem';
 import { createPhysicsSystem } from './systems/PhysicsSystem';
 import { createPlayerMovementSystem } from './systems/PlayerMovementSystem';
@@ -76,19 +78,11 @@ async function main(): Promise<void> {
     return eid;
   }
 
-  // Massive flat stone ground: static physics body + dark-grey slab mesh.
-  const ground = new THREE.Mesh(
-    new THREE.BoxGeometry(400, 1, 400),
-    new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.95 }),
-  );
-  ground.receiveShadow = true;
-  spawn(
-    ground,
-    RAPIER.RigidBodyDesc.fixed().setTranslation(0, -0.5, 0),
-    RAPIER.ColliderDesc.cuboid(200, 0.5, 200),
-  );
+  // Floors and their colliders now stream in via the ChunkManagerSystem; the
+  // spawn chunk is a registered landmark with a daylight shaft over origin.
+  registerLandmark(0, 0, spawnShaftHall);
 
-  // A lone cube suspended in the dark — falls and lands under gravity.
+  // A lone cube suspended in the dark — falls through the spawn shaft.
   const cube = new THREE.Mesh(
     new THREE.BoxGeometry(1, 1, 1),
     new THREE.MeshStandardMaterial({ color: 0x6b6b75, roughness: 0.6 }),
@@ -145,6 +139,7 @@ async function main(): Promise<void> {
   // --- Main loop ---
   const inputSystem = createInputSystem(renderer.domElement);
   const playerMovementSystem = createPlayerMovementSystem(physics);
+  const chunkManagerSystem = createChunkManagerSystem(physics, scene);
   const physicsSystem = createPhysicsSystem(physics);
   const cameraSystem = createCameraSystem(camera, physics);
   const renderSystem = createRenderSystem(renderer, scene, camera);
@@ -152,6 +147,7 @@ async function main(): Promise<void> {
   function loop(): void {
     inputSystem(world);
     playerMovementSystem(world);
+    chunkManagerSystem(world); // before the step: new colliders join this frame's sim
     physicsSystem(world);
     cameraSystem(world);
     renderSystem(world);

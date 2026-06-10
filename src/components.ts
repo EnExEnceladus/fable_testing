@@ -42,6 +42,16 @@ export const Flashlight = {
   lightId: [] as number[],
 };
 
+/**
+ * A streamed world cell: chunk-grid coords (not metres) plus its biome tag.
+ * Lifecycle — instances, colliders, entity — is owned by ChunkManagerSystem.
+ */
+export const Chunk = {
+  x: [] as number[],
+  z: [] as number[],
+  biome: [] as number[],
+};
+
 // Three.js objects cannot live inside component arrays, so components store
 // indices into these registries. The registries are data only — no game state
 // is ever stored on the Object3Ds themselves.
