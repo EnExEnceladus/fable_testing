@@ -24,6 +24,7 @@ import { createInputSystem } from './systems/InputSystem';
 import { createPhysicsSystem } from './systems/PhysicsSystem';
 import { createPlayerMovementSystem } from './systems/PlayerMovementSystem';
 import { createRenderSystem, setupAtmosphere } from './systems/RenderSystem';
+import { createTorchLightSystem } from './systems/TorchLightSystem';
 
 async function main(): Promise<void> {
   // --- Rendering ---
@@ -32,6 +33,8 @@ async function main(): Promise<void> {
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping; // filmic rolloff on torch and flashlight hotspots
+  renderer.toneMappingExposure = 1.2;
   document.body.appendChild(renderer.domElement);
   await renderer.init();
   renderer.setClearColor(0x000000, 1); // the void is pure black, same as the fog
@@ -123,7 +126,7 @@ async function main(): Promise<void> {
   flashlight.decay = 1.8;
   flashlight.distance = 45;
   flashlight.castShadow = true;
-  flashlight.shadow.mapSize.set(1024, 1024);
+  flashlight.shadow.mapSize.set(2048, 2048);
   scene.add(flashlight, flashlight.target);
 
   const player = addEntity(world);
@@ -153,6 +156,7 @@ async function main(): Promise<void> {
   const chunkManagerSystem = createChunkManagerSystem(physics, scene);
   const physicsSystem = createPhysicsSystem(physics);
   const cameraSystem = createCameraSystem(camera, physics);
+  const torchLightSystem = createTorchLightSystem(scene);
   const renderSystem = createRenderSystem(renderer, scene, camera);
 
   function loop(): void {
@@ -161,6 +165,7 @@ async function main(): Promise<void> {
     chunkManagerSystem(world); // before the step: new colliders join this frame's sim
     physicsSystem(world);
     cameraSystem(world);
+    torchLightSystem(world); // park the real lights on the nearest flames
     renderSystem(world);
     requestAnimationFrame(loop);
   }

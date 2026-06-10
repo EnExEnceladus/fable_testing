@@ -88,6 +88,25 @@ just inside the 96 m chunk ring. Per-instance flicker belongs on the GPU: the ma
 multiplies its gradient by a two-sine TSL `time` node — the light dances with zero CPU
 work and no per-frame buffer writes.
 
+## Surface detail belongs in world-space TSL, not textures
+Marble veining, carved-granite tool marks, and masonry mortar courses are all procedural
+node materials (`colorNode`/`normalNode`/`roughnessNode`) sampled in **world space** — so
+every instance differs automatically, nothing tiles, and bump detail comes from
+`bumpMap()` over the same noise. Per-instance tints still multiply on top of a custom
+`colorNode`, but they must become near-white *multipliers* (≈ 0.8–1.0) once the material
+carries real colour — old dark absolute tints turn everything black. @types/three now
+types TSL node generics strictly; helpers that take float-or-vec3 nodes need a permissive
+type.
+
+## Unbounded torches, bounded lights
+Torches are two instanced pools (iron bracket + additive flame whose two-sine flicker is
+phase-shifted per instance via `hash(instanceIndex)` — pure GPU) plus an entry in a torch
+registry. TorchLightSystem parks a fixed pool of 10 real PointLights on the nearest
+registered torches each frame with CPU-side flicker. Any number of torches can burn;
+the lighting cost is constant. Grand pillars are merged geometries (plinths, fluted
+shaft via radial vertex displacement + recomputed normals, collars, capital) — one
+instanced draw call regardless of ornament.
+
 ## One generic unit-cube pool covers most masonry
 Walls, alcove piers, lintels, the stone door, and Durin's Bridge deck are all the same
 `slab` pool (unit cube, base at y = 0) scaled per instance — landmark variety does not

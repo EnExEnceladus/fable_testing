@@ -78,6 +78,11 @@ export interface ChunkBuilder {
   chest(x: number, z: number, yaw: number): void;
   /** Heavy stone door slab standing ajar. */
   stoneDoor(x: number, z: number, yaw: number): void;
+  /** Coffered ceiling tile (8 m pitch) hung at the hall height. */
+  ceilingTile(x: number, z: number): void;
+  /** Wall/pillar torch: bracket + flame + an entry in the torch registry.
+   *  `yaw` faces the flame outward; the mount plate reaches back along -z. */
+  torch(x: number, z: number, yaw: number): void;
   /** One deck segment of a stone bridge (collides, walkable). */
   bridgeSegment(x: number, y: number, z: number, pitch: number): void;
 }
@@ -143,19 +148,35 @@ const COLUMN_SITES = [8, 24];
 
 /**
  * Colossal sheer walls along chunk edges carve the void into distinct
- * cavernous halls. Every wall keeps a deterministic 5 m doorway so the
- * delving stays traversable.
+ * cavernous halls. Every wall keeps a deterministic 5 m doorway, and every
+ * doorway is flanked by a pair of torches — travel routes are lit.
  */
 function edgeWalls(builder: ChunkBuilder, cx: number, cz: number, chance: number): void {
   if (edgeRoll(cx, cz, 0) < chance) {
     const gap = 7 + edgeRoll(cx, cz, 2) * 18;
     builder.wall(0, 0, gap - 2.5, 'z');
     builder.wall(0, gap + 2.5, CHUNK_SIZE - gap - 2.5, 'z');
+    builder.torch(1.05, gap - 4, Math.PI / 2);
+    builder.torch(1.05, gap + 4, Math.PI / 2);
   }
   if (edgeRoll(cx, cz, 1) < chance) {
     const gap = 7 + edgeRoll(cx, cz, 3) * 18;
     builder.wall(0, 0, gap - 2.5, 'x');
     builder.wall(gap + 2.5, 0, CHUNK_SIZE - gap - 2.5, 'x');
+    builder.torch(gap - 4, 1.05, 0);
+    builder.torch(gap + 4, 1.05, 0);
+  }
+}
+
+const CEILING_SITES = [4, 12, 20, 28]; // 8 m coffer pitch
+
+/** The carved coffered ceiling over the whole chunk — pitch black until a
+ *  light is raised to it, exactly as the halls should feel. */
+function ceilingGrid(builder: ChunkBuilder): void {
+  for (const gx of CEILING_SITES) {
+    for (const gz of CEILING_SITES) {
+      builder.ceilingTile(gx, gz);
+    }
   }
 }
 
@@ -181,12 +202,25 @@ function ruinedFloor(builder: ChunkBuilder, rng: () => number, ruin: number): vo
   }
 }
 
-/** A column site: intact, shattered to a stump amid rubble, or erased. */
-function columnSite(builder: ChunkBuilder, rng: () => number, x: number, z: number, breakChance: number): void {
+/** A column site: intact (usually carrying a pair of sconces), shattered to
+ *  a stump amid rubble, or erased. */
+function columnSite(
+  builder: ChunkBuilder,
+  rng: () => number,
+  x: number,
+  z: number,
+  breakChance: number,
+  torchChance: number,
+): void {
   const girth = 0.9 + rng() * 0.3;
   if (rng() >= breakChance) {
     if (rng() < 0.65) builder.boleColumn(x, z, girth);
     else builder.obeliskColumn(x, z, girth);
+    if (rng() < torchChance) {
+      const reach = 2.4 * girth + 0.55;
+      builder.torch(x + reach, z, Math.PI / 2);
+      builder.torch(x - reach, z, -Math.PI / 2);
+    }
     return;
   }
   // Shattered: a leaning stump and the strewn wreck of its upper drum.
@@ -210,10 +244,11 @@ export const upperMansionsHall: ChunkGenerator = (builder, rng, cx, cz) => {
   builder.floorSlab(0, 0, CHUNK_SIZE, CHUNK_SIZE);
   const ruin = rng() * 0.55;
   ruinedFloor(builder, rng, ruin);
+  ceilingGrid(builder);
   edgeWalls(builder, cx, cz, 0.16);
   for (const sx of COLUMN_SITES) {
     for (const sz of COLUMN_SITES) {
-      columnSite(builder, rng, sx, sz, 0.15);
+      columnSite(builder, rng, sx, sz, 0.15, 0.85);
     }
   }
   if (rng() < 0.12) builder.lightShaft(CHUNK_SIZE / 2, CHUNK_SIZE / 2);
@@ -228,10 +263,11 @@ export const lowerDeepsCavern: ChunkGenerator = (builder, rng, cx, cz) => {
   builder.floorSlab(0, 0, CHUNK_SIZE, CHUNK_SIZE);
   const ruin = 0.45 + rng() * 0.55;
   ruinedFloor(builder, rng, ruin);
+  ceilingGrid(builder);
   edgeWalls(builder, cx, cz, 0.28);
   for (const sx of COLUMN_SITES) {
     for (const sz of COLUMN_SITES) {
-      columnSite(builder, rng, sx, sz, 0.45);
+      columnSite(builder, rng, sx, sz, 0.45, 0.4);
     }
   }
   const fissures = rng() < 0.55 ? 1 + Math.floor(rng() * 2) : 0;
@@ -255,12 +291,13 @@ export const chasmCavern: ChunkGenerator = (builder, rng) => {
       builder.floorTile((tx + 0.5) * TILE_SIZE, (tz + 0.5) * TILE_SIZE, rng(), rng() < 0.3 ? rng() * 0.6 : 0);
     }
   }
+  ceilingGrid(builder); // the carved vault continues over the void
   // Fissures vent along both rims, lighting the void's edge red.
   builder.magmaFissure(4 + rng() * 8, CHASM_NEAR - 2.2, 0, 6 + rng() * 4);
   builder.magmaFissure(20 + rng() * 8, CHASM_FAR + 2.2, 0, 6 + rng() * 4);
   for (const sx of COLUMN_SITES) {
-    columnSite(builder, rng, sx, 4, 0.4);
-    columnSite(builder, rng, sx, 28, 0.4);
+    columnSite(builder, rng, sx, 4, 0.4, 0.5);
+    columnSite(builder, rng, sx, 28, 0.4, 0.5);
   }
   for (let i = 0; i < 5; i++) {
     const south = rng() < 0.5;
@@ -289,6 +326,7 @@ export const mazarbulChamber: ChunkGenerator = (builder, rng) => {
       builder.floorTile((tx + 0.5) * TILE_SIZE, (tz + 0.5) * TILE_SIZE, rng(), 0);
     }
   }
+  ceilingGrid(builder);
 
   // Room shell: x 4..28, z 7..25. Solid north/south/west; the east wall
   // breaks for the doorway, filled above by a lintel, barred by the door.
@@ -320,6 +358,14 @@ export const mazarbulChamber: ChunkGenerator = (builder, rng) => {
   for (let i = 0; i < 6; i++) {
     if (rng() < 0.5) builder.runeTile(6 + rng() * 20, 9 + rng() * 14);
   }
+
+  // Torches: a pair outside the east door, the inner corners, the tomb.
+  builder.torch(29.05, 12.5, Math.PI / 2);
+  builder.torch(29.05, 19.5, Math.PI / 2);
+  builder.torch(5.05, 9, Math.PI / 2);
+  builder.torch(5.05, 23, Math.PI / 2);
+  builder.torch(26.95, 9, -Math.PI / 2);
+  builder.torch(26.95, 23, -Math.PI / 2);
 };
 
 /**
@@ -346,6 +392,11 @@ export const durinsBridge: ChunkGenerator = (builder, rng, cx, cz) => {
   builder.boleColumn(21.5, 4, 1.25);
   builder.boleColumn(10.5, 28, 1.25);
   builder.boleColumn(21.5, 28, 1.25);
+  // Torches on the flank pillars mark both ends of the crossing.
+  builder.torch(14.05, 4, Math.PI / 2);
+  builder.torch(17.95, 4, -Math.PI / 2);
+  builder.torch(14.05, 28, Math.PI / 2);
+  builder.torch(17.95, 28, -Math.PI / 2);
   builder.magmaFissure(12, CHASM_FAR + 3.5, 0.4, 7);
   builder.magmaFissure(20, CHASM_NEAR - 3.5, -0.4, 7);
 };

@@ -4,6 +4,7 @@ import { addComponent, addEntity, query, removeEntity, type World } from 'bitecs
 import { Chunk, Player, Position, RigidBody } from '../components';
 import type { InstancePool } from '../chunks/InstancePool';
 import { createHallPools } from '../chunks/pools';
+import { registerTorch, unregisterTorch } from '../chunks/torchRegistry';
 import {
   biomeFor,
   CHUNK_SIZE,
@@ -20,10 +21,11 @@ const MAX_LOADS_PER_TICK = 2; // amortise generation so a ring of new chunks nev
 const WALL_THICKNESS = 1.2;
 
 /** Per-chunk bookkeeping that cannot live in SoA components: which pool
- *  slots the chunk owns. The Rapier body travels on the chunk entity's
- *  RigidBody component like every other physical entity. */
+ *  slots and torch registrations the chunk owns. The Rapier body travels on
+ *  the chunk entity's RigidBody component like every other physical entity. */
 interface ChunkRecord {
   allocations: Array<[InstancePool, number]>;
+  torchIds: number[];
 }
 
 /**
@@ -58,7 +60,7 @@ export function createChunkManagerSystem(physics: RAPIER.World, scene: THREE.Sce
     const body = physics.createRigidBody(RAPIER.RigidBodyDesc.fixed());
     RigidBody.handle[eid] = body.handle;
 
-    const record: ChunkRecord = { allocations: [] };
+    const record: ChunkRecord = { allocations: [], torchIds: [] };
     records.set(eid, record);
     loadedByKey.set(`${cx},${cz}`, eid);
 
@@ -106,6 +108,8 @@ export function createChunkManagerSystem(physics: RAPIER.World, scene: THREE.Sce
     const builder: ChunkBuilder = {
       floorTile: (x, z, shade, jitter = 0) => {
         // Fracture damage is visual only — the collider slab stays flat.
+        // Tints are near-white multipliers; the marble colorNode carries
+        // the real colour.
         place(
           pools.floor,
           x,
@@ -116,7 +120,7 @@ export function createChunkManagerSystem(physics: RAPIER.World, scene: THREE.Sce
           1,
           0,
           jitter * 0.035,
-          tint.setScalar(0.05 + shade * 0.05),
+          tint.setScalar(0.78 + shade * 0.22),
         );
       },
       floorSlab: (x, z, w, d) => collide(x + w / 2, -0.25, z + d / 2, w / 2, 0.25, d / 2),
@@ -136,9 +140,6 @@ export function createChunkManagerSystem(physics: RAPIER.World, scene: THREE.Sce
           alongX ? length : WALL_THICKNESS,
           height,
           alongX ? WALL_THICKNESS : length,
-          0,
-          0,
-          tint.setScalar(0.05),
         );
         collide(
           cxm,
@@ -150,24 +151,38 @@ export function createChunkManagerSystem(physics: RAPIER.World, scene: THREE.Sce
         );
       },
       boleColumn: (x, z, girth) => {
-        place(pools.bole, x, 0, z, girth, 1, girth, 0, 0, tint.setScalar(0.14 + girth * 0.06));
-        collide(x, HALL_HEIGHT / 2, z, 1.5 * girth, HALL_HEIGHT / 2, 1.5 * girth);
+        place(pools.bole, x, 0, z, girth, 1, girth, 0, 0, tint.setScalar(0.85 + girth * 0.15));
+        // Wide enough to keep the capsule off the plinth steps.
+        collide(x, HALL_HEIGHT / 2, z, 2.4 * girth, HALL_HEIGHT / 2, 2.4 * girth);
       },
       obeliskColumn: (x, z, girth) => {
-        place(pools.obelisk, x, 0, z, girth, 1, girth, 0, 0, tint.setScalar(0.12 + girth * 0.06));
-        collide(x, HALL_HEIGHT / 2, z, 1.5 * girth, HALL_HEIGHT / 2, 1.5 * girth);
+        place(pools.obelisk, x, 0, z, girth, 1, girth, 0, 0, tint.setScalar(0.85 + girth * 0.15));
+        collide(x, HALL_HEIGHT / 2, z, 2.2 * girth, HALL_HEIGHT / 2, 2.2 * girth);
       },
       brokenColumn: (x, z, girth, lean, yaw) => {
-        place(pools.stump, x, 0, z, girth, 1, girth, yaw, lean, tint.setScalar(0.13 + girth * 0.05));
-        collide(x, 1.8, z, 1.6 * girth, 1.8, 1.6 * girth);
+        place(pools.stump, x, 0, z, girth, 1, girth, yaw, lean, tint.setScalar(0.9));
+        collide(x, 1.9, z, 2.4 * girth, 1.9, 2.4 * girth);
       },
       rubble: (x, z, size, squash, yaw, shade) =>
         place(pools.rubble, x, 0, z, size, size * squash, size * 0.85, yaw, 0, tint.setScalar(0.03 + shade * 0.08)),
-      archFragment: (x, z, yaw, lean) =>
-        place(pools.arch, x, 0.4, z, 1, 1, 1, yaw, lean, tint.setScalar(0.1)),
+      archFragment: (x, z, yaw, lean) => place(pools.arch, x, 0.4, z, 1, 1, 1, yaw, lean),
+      ceilingTile: (x, z) => place(pools.ceiling, x, HALL_HEIGHT, z, 1, 1, 1),
+      torch: (x, z, yaw) => {
+        place(pools.bracket, x, 3.9, z, 1, 1, 1, yaw);
+        place(pools.flame, x, 4.12, z, 1, 1, 1);
+        record.torchIds.push(registerTorch(ox + x, 4.55, oz + z));
+      },
       lightShaft: (x, z, pitch = 0, yaw = 0) => {
         place(pools.beam, x, 0, z, 1, 1, 1, yaw, pitch);
         place(pools.glow, x, 0, z, 1, 1, 1, 0, 0, tint.setHex(0x4a6fa8));
+      },
+      stoneDoor: (x, z, yaw) => {
+        place(pools.slab, x, 0, z, 4.6, 6, 0.5, yaw);
+        collide(x, 3, z, 2.3, 3, 0.25, yaw);
+      },
+      bridgeSegment: (x, y, z, pitch) => {
+        place(pools.slab, x, y - 0.5, z, 2.6, 0.5, 2.8, 0, pitch);
+        collide(x, y - 0.25, z, 1.3, 0.25, 1.4, 0, pitch);
       },
       magmaFissure: (x, z, yaw, length) => {
         place(pools.fissure, x, 0, z, 1, 1, length, yaw);
@@ -179,14 +194,6 @@ export function createChunkManagerSystem(physics: RAPIER.World, scene: THREE.Sce
         collide(x, 0.75, z, 1.3, 0.75, 0.65);
       },
       chest: (x, z, yaw) => place(pools.chest, x, 0, z, 1, 1, 1, yaw),
-      stoneDoor: (x, z, yaw) => {
-        place(pools.slab, x, 0, z, 4.6, 6, 0.5, yaw, 0, tint.setScalar(0.07));
-        collide(x, 3, z, 2.3, 3, 0.25, yaw);
-      },
-      bridgeSegment: (x, y, z, pitch) => {
-        place(pools.slab, x, y - 0.5, z, 2.6, 0.5, 2.8, 0, pitch, tint.setScalar(0.16));
-        collide(x, y - 0.25, z, 1.3, 0.25, 1.4, 0, pitch);
-      },
     };
 
     generatorFor(cx, cz)(builder, mulberry32(chunkSeed(cx, cz)), cx, cz);
@@ -196,6 +203,7 @@ export function createChunkManagerSystem(physics: RAPIER.World, scene: THREE.Sce
     const record = records.get(eid);
     if (record) {
       for (const [pool, slot] of record.allocations) pool.release(slot);
+      for (const id of record.torchIds) unregisterTorch(id);
       records.delete(eid);
     }
     loadedByKey.delete(`${Chunk.x[eid]},${Chunk.z[eid]}`);

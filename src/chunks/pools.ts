@@ -2,10 +2,12 @@ import * as THREE from 'three/webgpu';
 import { float, mix, positionGeometry, sin, time } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { InstancePool } from './InstancePool';
+import { carvedGraniteMaterial, flameMaterial, marbleMaterial, masonryMaterial } from './materials';
 import { HALL_HEIGHT, TILE_SIZE } from './worldgen';
 
 export interface HallPools {
   floor: InstancePool;
+  ceiling: InstancePool;
   rune: InstancePool;
   grate: InstancePool;
   mithril: InstancePool;
@@ -17,6 +19,8 @@ export interface HallPools {
   arch: InstancePool;
   tomb: InstancePool;
   chest: InstancePool;
+  bracket: InstancePool;
+  flame: InstancePool;
   beam: InstancePool;
   glow: InstancePool;
   fissure: InstancePool;
@@ -26,20 +30,153 @@ export interface HallPools {
 const MAGMA_GLOW_HEIGHT = 7;
 
 /**
+ * Radial fluting: displaces lathe vertices by cos(ribs·θ), faded in/out
+ * across [y0, y1] so the carving dies into plinth and capital like real
+ * stonework. Recomputes normals — the ribs must catch raking light.
+ */
+function flute(
+  geo: THREE.BufferGeometry,
+  ribs: number,
+  depth: number,
+  y0: number,
+  y1: number,
+): THREE.BufferGeometry {
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const fade =
+      THREE.MathUtils.smoothstep(y, y0, y0 + 1.5) *
+      (1 - THREE.MathUtils.smoothstep(y, y1 - 1.5, y1));
+    if (fade <= 0) continue;
+    const theta = Math.atan2(z, x);
+    const f = 1 + depth * fade * Math.cos(ribs * theta);
+    pos.setX(i, x * f);
+    pos.setZ(i, z * f);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function translated(geo: THREE.BufferGeometry, x: number, y: number, z: number): THREE.BufferGeometry {
+  geo.translate(x, y, z);
+  return geo;
+}
+
+/** The grand tree-bole pillar: stepped octagonal plinths, a fluted shaft,
+ *  three collar rings, and a flared capital under a square abacus. One
+ *  merged geometry (~1.6 k tris) — still one instanced draw call. */
+function grandBoleGeometry(): THREE.BufferGeometry {
+  const shaft = new THREE.LatheGeometry(
+    [
+      new THREE.Vector2(2.4, 1.2),
+      new THREE.Vector2(1.75, 3.0),
+      new THREE.Vector2(1.55, 8),
+      new THREE.Vector2(1.5, 15),
+      new THREE.Vector2(1.6, 22),
+      new THREE.Vector2(1.9, 26),
+      new THREE.Vector2(2.5, 27.6),
+    ],
+    28,
+  );
+  flute(shaft, 10, 0.09, 3.0, 26);
+
+  const collar = (r: number, y: number) =>
+    translated(new THREE.TorusGeometry(r, 0.14, 6, 24).rotateX(Math.PI / 2), 0, y, 0);
+
+  return mergeGeometries([
+    translated(new THREE.CylinderGeometry(3.2, 3.5, 0.6, 8), 0, 0.3, 0),
+    translated(new THREE.CylinderGeometry(2.6, 3.0, 0.7, 8), 0, 0.95, 0),
+    shaft,
+    collar(1.78, 5.5),
+    collar(1.62, 14),
+    collar(1.74, 22.5),
+    translated(new THREE.CylinderGeometry(3.4, 2.2, 1.6, 8), 0, 28.4, 0),
+    translated(new THREE.BoxGeometry(5.6, 0.9, 5.6), 0, 29.55, 0),
+  ])!;
+}
+
+/** The severe obelisk: two interpenetrating four-sided frustums (an
+ *  eight-point bevelled cross-section), stepped base, collar and tip. */
+function grandObeliskGeometry(): THREE.BufferGeometry {
+  return mergeGeometries([
+    translated(new THREE.BoxGeometry(4.4, 0.8, 4.4), 0, 0.4, 0),
+    translated(new THREE.BoxGeometry(3.6, 0.8, 3.6), 0, 1.1, 0),
+    translated(new THREE.CylinderGeometry(1.35, 2.3, 26, 4).rotateY(Math.PI / 4), 0, 14.5, 0),
+    translated(new THREE.CylinderGeometry(1.2, 2.1, 26, 4), 0, 14.5, 0),
+    translated(new THREE.BoxGeometry(3.0, 0.5, 3.0), 0, 27.75, 0),
+    translated(new THREE.CylinderGeometry(0.9, 1.6, 2.0, 4).rotateY(Math.PI / 4), 0, 29.0, 0),
+  ])!;
+}
+
+/** Shattered pillar stump: the plinths survive, the fluted shaft breaks off
+ *  a few metres up. */
+function stumpGeometry(): THREE.BufferGeometry {
+  const broken = new THREE.LatheGeometry(
+    [
+      new THREE.Vector2(2.4, 1.2),
+      new THREE.Vector2(1.8, 2.6),
+      new THREE.Vector2(1.45, 3.4),
+      new THREE.Vector2(1.0, 3.9),
+    ],
+    20,
+  );
+  flute(broken, 10, 0.09, 1.4, 3.9);
+  return mergeGeometries([
+    translated(new THREE.CylinderGeometry(3.2, 3.5, 0.6, 8), 0, 0.3, 0),
+    translated(new THREE.CylinderGeometry(2.6, 3.0, 0.7, 8), 0, 0.95, 0),
+    broken,
+  ])!;
+}
+
+/** Coffered ceiling tile (8 × 8 m, hung at the hall height): a deep frame
+ *  and cross-ribs around recessed panels — carved, not poured. */
+function cofferGeometry(): THREE.BufferGeometry {
+  return mergeGeometries([
+    translated(new THREE.BoxGeometry(8, 0.7, 1.4), 0, -0.35, 3.3),
+    translated(new THREE.BoxGeometry(8, 0.7, 1.4), 0, -0.35, -3.3),
+    translated(new THREE.BoxGeometry(1.4, 0.7, 5.2), 3.3, -0.35, 0),
+    translated(new THREE.BoxGeometry(1.4, 0.7, 5.2), -3.3, -0.35, 0),
+    translated(new THREE.BoxGeometry(8, 0.45, 0.7), 0, -0.225, 0),
+    translated(new THREE.BoxGeometry(0.7, 0.45, 8), 0, -0.225, 0),
+    translated(new THREE.BoxGeometry(7.6, 0.25, 7.6), 0, -0.125, 0),
+  ])!;
+}
+
+/** Wall-mounted torch: back plate, arm, and iron cup. The flame and the
+ *  real light are separate concerns (flame pool / TorchLightSystem). */
+function bracketGeometry(): THREE.BufferGeometry {
+  return mergeGeometries([
+    translated(new THREE.BoxGeometry(0.3, 0.5, 0.06), 0, -0.1, -0.52),
+    translated(new THREE.BoxGeometry(0.07, 0.07, 0.6), 0, 0, -0.25),
+    translated(new THREE.CylinderGeometry(0.14, 0.06, 0.32, 6), 0, 0.12, 0),
+  ])!;
+}
+
+/**
  * One instanced pool per architectural material class — every loaded chunk
- * feeds these sixteen draw calls and nothing else. Materials use white
- * albedo where instances carry per-stone colour; caps are the VRAM governor
- * (≈ 80 B per instance, all pools together a couple of MB).
+ * feeds these nineteen draw calls and nothing else. Surface detail lives in
+ * world-space TSL materials (marble, carved granite, coursed masonry), so
+ * instances never repeat visibly. Caps are the VRAM governor (≈ 80 B per
+ * instance; all pools together a couple of MB).
  */
 export function createHallPools(scene: THREE.Scene): HallPools {
-  // Polished black stone floor; low roughness so the flashlight drags a
-  // specular streak across it. Tiles sit 0.08 m apart — carved precision.
+  // Marbled near-black floor, polished — the flashlight drags a specular
+  // streak and the veins ignite first. Tiles sit 0.08 m apart.
   const floorGeo = new THREE.BoxGeometry(TILE_SIZE - 0.08, 0.4, TILE_SIZE - 0.08);
   floorGeo.translate(0, -0.2, 0); // top face at y = 0
   const floor = new InstancePool(
     floorGeo,
-    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3, metalness: 0.15 }),
+    marbleMaterial(0x16181d, 0x7e8696, 0.25, 0.5),
     10_000,
+    { receiveShadow: true },
+  );
+
+  const ceiling = new InstancePool(
+    cofferGeometry(),
+    carvedGraniteMaterial(0x24262c, 0.9, 0.35),
+    1200,
     { receiveShadow: true },
   );
 
@@ -68,7 +205,7 @@ export function createHallPools(scene: THREE.Scene): HallPools {
   );
 
   // Mithril vein: a thin seam with a pure silver-white specular spike —
-  // full metalness, near-mirror roughness, so it only ignites under the beam.
+  // full metalness, near-mirror roughness, so it only ignites under light.
   const mithrilGeo = new THREE.BoxGeometry(0.18, 0.05, 1);
   mithrilGeo.translate(0, 0.025, 0);
   const mithril = new InstancePool(
@@ -78,58 +215,33 @@ export function createHallPools(scene: THREE.Scene): HallPools {
   );
 
   // Generic masonry slab (unit cube, base at y = 0): scaled per instance
-  // into colossal sheer walls, alcove piers, lintels, doors and bridge
-  // decks. Polished black stone — glassy under the flashlight.
+  // into colossal coursed walls, alcove piers, lintels, doors and bridge
+  // decks.
   const slabGeo = new THREE.BoxGeometry(1, 1, 1);
   slabGeo.translate(0, 0.5, 0);
-  const slab = new InstancePool(
-    slabGeo,
-    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.18, metalness: 0.1 }),
-    2500,
-    { castShadow: true, receiveShadow: true },
-  );
+  const slab = new InstancePool(slabGeo, masonryMaterial(0x1d2026, 0.5), 2500, {
+    castShadow: true,
+    receiveShadow: true,
+  });
 
-  // Tree-bole column: lathe profile flaring at root and capital, ~150 tris.
-  const bolePoints = [
-    new THREE.Vector2(2.7, 0),
-    new THREE.Vector2(1.9, 1.2),
-    new THREE.Vector2(1.45, 4),
-    new THREE.Vector2(1.3, 14),
-    new THREE.Vector2(1.45, 25),
-    new THREE.Vector2(2.0, 28.4),
-    new THREE.Vector2(3.0, HALL_HEIGHT),
-  ];
   const bole = new InstancePool(
-    new THREE.LatheGeometry(bolePoints, 12),
-    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85 }),
+    grandBoleGeometry(),
+    carvedGraniteMaterial(0x3a3d44, 0.78),
     1500,
     { castShadow: true, receiveShadow: true },
   );
 
-  // Severe geometric obelisk: a tapered four-sided frustum.
-  const obeliskGeo = new THREE.CylinderGeometry(1.05, 1.9, HALL_HEIGHT, 4, 1);
-  obeliskGeo.rotateY(Math.PI / 4); // flats face the cardinal aisles
-  obeliskGeo.translate(0, HALL_HEIGHT / 2, 0);
   const obelisk = new InstancePool(
-    obeliskGeo,
-    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }),
+    grandObeliskGeometry(),
+    carvedGraniteMaterial(0x2c2f36, 0.85),
     800,
     { castShadow: true, receiveShadow: true },
   );
 
-  // Shattered column stump, broken off a few metres up.
-  const stumpPoints = [
-    new THREE.Vector2(2.7, 0),
-    new THREE.Vector2(1.9, 1.2),
-    new THREE.Vector2(1.5, 2.8),
-    new THREE.Vector2(1.05, 3.6),
-  ];
-  const stump = new InstancePool(
-    new THREE.LatheGeometry(stumpPoints, 12),
-    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }),
-    500,
-    { castShadow: true, receiveShadow: true },
-  );
+  const stump = new InstancePool(stumpGeometry(), carvedGraniteMaterial(0x383b41, 0.88), 500, {
+    castShadow: true,
+    receiveShadow: true,
+  });
 
   // Fallen rock: a low-poly boulder; squashed flat it reads as dust drifts
   // or the burned shreds of books. Sits half-sunk in the floor.
@@ -143,22 +255,17 @@ export function createHallPools(scene: THREE.Scene): HallPools {
   // Collapsed archway fragment: a broken torus arc toppled into the hall.
   const archGeo = new THREE.TorusGeometry(4, 0.9, 6, 10, Math.PI * 0.7);
   archGeo.rotateZ(Math.PI * 0.15); // centre the apex upward
-  const arch = new InstancePool(
-    archGeo,
-    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }),
-    300,
-    { castShadow: true },
-  );
+  const arch = new InstancePool(archGeo, carvedGraniteMaterial(0x33363c, 0.9), 300, {
+    castShadow: true,
+  });
 
   // Tomb of single white stone — the one pale thing in the dark.
   const tombGeo = new THREE.BoxGeometry(2.6, 1.5, 1.3);
   tombGeo.translate(0, 0.75, 0);
-  const tomb = new InstancePool(
-    tombGeo,
-    new THREE.MeshStandardMaterial({ color: 0xd8d4cc, roughness: 0.35 }),
-    16,
-    { castShadow: true, receiveShadow: true },
-  );
+  const tomb = new InstancePool(tombGeo, marbleMaterial(0xb6b2a9, 0xe8e4da, 0.32, 0.8), 16, {
+    castShadow: true,
+    receiveShadow: true,
+  });
 
   // Ruined iron-bound chest.
   const chestGeo = new THREE.BoxGeometry(1.15, 0.75, 0.7);
@@ -169,6 +276,17 @@ export function createHallPools(scene: THREE.Scene): HallPools {
     128,
     { castShadow: true },
   );
+
+  const bracket = new InstancePool(
+    bracketGeometry(),
+    new THREE.MeshStandardMaterial({ color: 0x1a1714, roughness: 0.6, metalness: 0.8 }),
+    700,
+  );
+
+  const flameGeo = new THREE.SphereGeometry(0.17, 8, 8);
+  flameGeo.scale(1, 1.9, 1);
+  flameGeo.translate(0, 0.3, 0);
+  const flame = new InstancePool(flameGeo, flameMaterial(), 700);
 
   // Daylight shaft beam: fake volumetrics — an additive open cylinder whose
   // opacity fades down its length via a TSL gradient. Costs zero real
@@ -225,6 +343,7 @@ export function createHallPools(scene: THREE.Scene): HallPools {
 
   const pools: HallPools = {
     floor,
+    ceiling,
     rune,
     grate,
     mithril,
@@ -236,6 +355,8 @@ export function createHallPools(scene: THREE.Scene): HallPools {
     arch,
     tomb,
     chest,
+    bracket,
+    flame,
     beam,
     glow,
     fissure,
