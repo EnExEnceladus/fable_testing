@@ -101,11 +101,24 @@ type.
 ## Unbounded torches, bounded lights
 Torches are two instanced pools (iron bracket + additive flame whose two-sine flicker is
 phase-shifted per instance via `hash(instanceIndex)` — pure GPU) plus an entry in a torch
-registry. TorchLightSystem parks a fixed pool of 10 real PointLights on the nearest
+registry. TorchLightSystem parks a fixed pool of real PointLights on the nearest
 registered torches each frame with CPU-side flicker. Any number of torches can burn;
 the lighting cost is constant. Grand pillars are merged geometries (plinths, fluted
 shaft via radial vertex displacement + recomputed normals, collars, capital) — one
-instanced draw call regardless of ornament.
+instanced draw call regardless of ornament. The registry later generalised to
+LightPoint (colour/intensity/range/flicker per entry), so steady moonlight breaches and
+flickering torches share the same budgeted pool.
+
+## A sky you only see through holes is geometry, not background
+The night sky (procedural TSL star field with drifting mist, crescent moon as one disc
+bitten by an offset shadow circle) is a giant downward-facing disc hung far above the
+vault line with `fog: false` — the scene background stays pure black so the *horizontal*
+void still swallows everything. Ceilings occlude the sky except where vault-bay tiles are
+deliberately skipped (breaches); the sky group copies the camera's XZ each frame so it
+never parallaxes and reads as infinitely far. Sight-line math matters: through an 8 m
+hole in a 44 m ceiling the visible sky cone is ~11°, so the moon must hang near zenith
+to be findable. Star/moon patterns sample `positionGeometry` (not `positionWorld`) or
+they would swim as the sky follows the player.
 
 ## One generic unit-cube pool covers most masonry
 Walls, alcove piers, lintels, the stone door, and Durin's Bridge deck are all the same

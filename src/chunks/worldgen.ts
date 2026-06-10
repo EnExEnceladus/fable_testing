@@ -5,7 +5,7 @@
 
 export const CHUNK_SIZE = 32; // metres per chunk side
 export const TILE_SIZE = 4; // floor tile pitch
-export const HALL_HEIGHT = 30; // floor-to-ceiling of the great halls
+export const HALL_HEIGHT = 44; // floor-to-vault of the great halls — cathedral scale
 
 const WORLD_SEED = 0x4d6f7269;
 
@@ -56,8 +56,18 @@ export interface ChunkBuilder {
   grate(x: number, z: number): void;
   /** Mithril vein: a thin silver-white seam across the stone. */
   mithrilVein(x: number, z: number, yaw: number, length: number): void;
-  /** Sheer polished wall slab from (x, z), `length` metres along `axis`. */
-  wall(x: number, z: number, length: number, axis: 'x' | 'z', height?: number, y?: number): void;
+  /** Sheer coursed wall slab from (x, z), `length` metres along `axis`.
+   *  Long full-height walls grow gothic buttresses on both faces unless
+   *  `buttress` is false (e.g. interiors already lined with piers). */
+  wall(
+    x: number,
+    z: number,
+    length: number,
+    axis: 'x' | 'z',
+    height?: number,
+    y?: number,
+    buttress?: boolean,
+  ): void;
   /** Tree-bole pillar; girth scales width only — all reach the ceiling. */
   boleColumn(x: number, z: number, girth: number): void;
   /** Severe four-sided obelisk pillar. */
@@ -68,8 +78,9 @@ export interface ChunkBuilder {
   rubble(x: number, z: number, size: number, squash: number, yaw: number, shade: number): void;
   /** Collapsed archway fragment toppled against the floor. */
   archFragment(x: number, z: number, yaw: number, lean: number): void;
-  /** Daylight shaft (volumetric beam + floor glow); pitch tilts the beam. */
-  lightShaft(x: number, z: number, pitch?: number, yaw?: number): void;
+  /** Collapsed vault: a hole in the ceiling open to the night sky — jagged
+   *  rim, fallen debris heaped below, and a pool of faint moonlight. */
+  ceilingBreach(x: number, z: number): void;
   /** Magma fissure: emissive crack, flickering glow column, red floor light. */
   magmaFissure(x: number, z: number, yaw: number, length: number): void;
   /** Stark rectangular tomb of single white stone. */
@@ -156,25 +167,28 @@ function edgeWalls(builder: ChunkBuilder, cx: number, cz: number, chance: number
     const gap = 7 + edgeRoll(cx, cz, 2) * 18;
     builder.wall(0, 0, gap - 2.5, 'z');
     builder.wall(0, gap + 2.5, CHUNK_SIZE - gap - 2.5, 'z');
-    builder.torch(1.05, gap - 4, Math.PI / 2);
-    builder.torch(1.05, gap + 4, Math.PI / 2);
+    builder.torch(1.25, gap - 4, Math.PI / 2);
+    builder.torch(1.25, gap + 4, Math.PI / 2);
   }
   if (edgeRoll(cx, cz, 1) < chance) {
     const gap = 7 + edgeRoll(cx, cz, 3) * 18;
     builder.wall(0, 0, gap - 2.5, 'x');
     builder.wall(gap + 2.5, 0, CHUNK_SIZE - gap - 2.5, 'x');
-    builder.torch(gap - 4, 1.05, 0);
-    builder.torch(gap + 4, 1.05, 0);
+    builder.torch(gap - 4, 1.25, 0);
+    builder.torch(gap + 4, 1.25, 0);
   }
 }
 
-const CEILING_SITES = [4, 12, 20, 28]; // 8 m coffer pitch
+const CEILING_SITES = [4, 12, 20, 28]; // 8 m vault-bay pitch
 
-/** The carved coffered ceiling over the whole chunk — pitch black until a
- *  light is raised to it, exactly as the halls should feel. */
-function ceilingGrid(builder: ChunkBuilder): void {
+/** The carved vaulted ceiling over the whole chunk. A breach centre skips
+ *  the bays it swallowed, opening the hall to the night sky above. */
+function ceilingGrid(builder: ChunkBuilder, breachX = NaN, breachZ = NaN): void {
   for (const gx of CEILING_SITES) {
     for (const gz of CEILING_SITES) {
+      const dx = gx - breachX;
+      const dz = gz - breachZ;
+      if (dx * dx + dz * dz < 36) continue; // NaN compares false: no breach, no skip
       builder.ceilingTile(gx, gz);
     }
   }
@@ -217,7 +231,7 @@ function columnSite(
     if (rng() < 0.65) builder.boleColumn(x, z, girth);
     else builder.obeliskColumn(x, z, girth);
     if (rng() < torchChance) {
-      const reach = 2.4 * girth + 0.55;
+      const reach = 2.9 * girth + 0.3; // clear of the clustered shaft, above the plinth
       builder.torch(x + reach, z, Math.PI / 2);
       builder.torch(x - reach, z, -Math.PI / 2);
     }
@@ -244,14 +258,22 @@ export const upperMansionsHall: ChunkGenerator = (builder, rng, cx, cz) => {
   builder.floorSlab(0, 0, CHUNK_SIZE, CHUNK_SIZE);
   const ruin = rng() * 0.55;
   ruinedFloor(builder, rng, ruin);
-  ceilingGrid(builder);
+  // Some vaults have fallen: the breach opens to the night sky and lets a
+  // pool of moonlight down. Interior bays only, clear of chunk seams.
+  if (rng() < 0.22) {
+    const bx = 12 + Math.floor(rng() * 2) * 8;
+    const bz = 12 + Math.floor(rng() * 2) * 8;
+    ceilingGrid(builder, bx, bz);
+    builder.ceilingBreach(bx, bz);
+  } else {
+    ceilingGrid(builder);
+  }
   edgeWalls(builder, cx, cz, 0.16);
   for (const sx of COLUMN_SITES) {
     for (const sz of COLUMN_SITES) {
       columnSite(builder, rng, sx, sz, 0.15, 0.85);
     }
   }
-  if (rng() < 0.12) builder.lightShaft(CHUNK_SIZE / 2, CHUNK_SIZE / 2);
 };
 
 /**
@@ -306,11 +328,20 @@ export const chasmCavern: ChunkGenerator = (builder, rng) => {
 };
 
 /**
- * Landmark — the spawn hall: a guaranteed daylight shaft over world origin.
+ * Landmark — the spawn hall: a guaranteed fallen vault at (12, 12) so the
+ * first thing seen is moonlight standing in the dark.
  */
-export const spawnShaftHall: ChunkGenerator = (builder, rng, cx, cz) => {
-  upperMansionsHall(builder, rng, cx, cz);
-  builder.lightShaft(0, 0);
+export const spawnHall: ChunkGenerator = (builder, rng, cx, cz) => {
+  builder.floorSlab(0, 0, CHUNK_SIZE, CHUNK_SIZE);
+  ruinedFloor(builder, rng, rng() * 0.4);
+  ceilingGrid(builder, 12, 12);
+  builder.ceilingBreach(12, 12);
+  edgeWalls(builder, cx, cz, 0.16);
+  for (const sx of COLUMN_SITES) {
+    for (const sz of COLUMN_SITES) {
+      columnSite(builder, rng, sx, sz, 0.15, 0.85);
+    }
+  }
 };
 
 /**
@@ -326,16 +357,19 @@ export const mazarbulChamber: ChunkGenerator = (builder, rng) => {
       builder.floorTile((tx + 0.5) * TILE_SIZE, (tz + 0.5) * TILE_SIZE, rng(), 0);
     }
   }
-  ceilingGrid(builder);
+  ceilingGrid(builder, 12, 12);
+  builder.ceilingBreach(12, 12);
 
   // Room shell: x 4..28, z 7..25. Solid north/south/west; the east wall
   // breaks for the doorway, filled above by a lintel, barred by the door.
-  builder.wall(4, 25, 24, 'x');
-  builder.wall(4, 7, 24, 'x');
+  // North/south walls skip auto-buttresses — their inner faces carry the
+  // alcove piers.
+  builder.wall(4, 25, 24, 'x', undefined, undefined, false);
+  builder.wall(4, 7, 24, 'x', undefined, undefined, false);
   builder.wall(4, 7, 18, 'z');
   builder.wall(28, 7, 6.5, 'z');
   builder.wall(28, 18.5, 6.5, 'z');
-  builder.wall(28, 13.5, 5, 'z', 24, 6); // lintel above the door gap
+  builder.wall(28, 13.5, 5, 'z', HALL_HEIGHT - 6, 6); // lintel fills the wall above the door
   builder.stoneDoor(28, 15.4, -0.55);
 
   // Alcove piers comb the inner north and south walls; a ruined chest and
@@ -352,9 +386,9 @@ export const mazarbulChamber: ChunkGenerator = (builder, rng) => {
     }
   }
 
-  // The tomb of single white stone under its angled shaft.
+  // The tomb of single white stone, washed by moonlight through the fallen
+  // vault one bay west — the light arrives angled, as the record demands.
   builder.tomb(16, 16);
-  builder.lightShaft(16, 16, 0.25, 0.8);
   for (let i = 0; i < 6; i++) {
     if (rng() < 0.5) builder.runeTile(6 + rng() * 20, 9 + rng() * 14);
   }

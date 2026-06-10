@@ -3,7 +3,9 @@ import { float, mix, positionGeometry, sin, time } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { InstancePool } from './InstancePool';
 import { carvedGraniteMaterial, flameMaterial, marbleMaterial, masonryMaterial } from './materials';
-import { HALL_HEIGHT, TILE_SIZE } from './worldgen';
+// Pier/obelisk/buttress profiles below are hand-tuned to HALL_HEIGHT (44 m);
+// retune them if the vault line moves.
+import { TILE_SIZE } from './worldgen';
 
 export interface HallPools {
   floor: InstancePool;
@@ -12,6 +14,7 @@ export interface HallPools {
   grate: InstancePool;
   mithril: InstancePool;
   slab: InstancePool;
+  buttress: InstancePool;
   bole: InstancePool;
   obelisk: InstancePool;
   stump: InstancePool;
@@ -21,7 +24,6 @@ export interface HallPools {
   chest: InstancePool;
   bracket: InstancePool;
   flame: InstancePool;
-  beam: InstancePool;
   glow: InstancePool;
   fissure: InstancePool;
   magmaGlow: InstancePool;
@@ -64,83 +66,110 @@ function translated(geo: THREE.BufferGeometry, x: number, y: number, z: number):
   return geo;
 }
 
-/** The grand tree-bole pillar: stepped octagonal plinths, a fluted shaft,
- *  three collar rings, and a flared capital under a square abacus. One
- *  merged geometry (~1.6 k tris) — still one instanced draw call. */
+/** The grand pier, gothic-clustered: stepped octagonal plinths, a fluted
+ *  core with four attached colonnettes, shaft rings binding the cluster,
+ *  and a flared capital under a square abacus at the 44 m vault line. One
+ *  merged geometry (~2 k tris) — still one instanced draw call. */
 function grandBoleGeometry(): THREE.BufferGeometry {
-  const shaft = new THREE.LatheGeometry(
+  const core = new THREE.LatheGeometry(
     [
-      new THREE.Vector2(2.4, 1.2),
-      new THREE.Vector2(1.75, 3.0),
-      new THREE.Vector2(1.55, 8),
-      new THREE.Vector2(1.5, 15),
-      new THREE.Vector2(1.6, 22),
-      new THREE.Vector2(1.9, 26),
-      new THREE.Vector2(2.5, 27.6),
+      new THREE.Vector2(2.6, 1.5),
+      new THREE.Vector2(2.0, 3.5),
+      new THREE.Vector2(1.85, 12),
+      new THREE.Vector2(1.8, 24),
+      new THREE.Vector2(1.9, 34),
+      new THREE.Vector2(2.2, 38.5),
+      new THREE.Vector2(3.0, 40.4),
     ],
-    28,
+    24,
   );
-  flute(shaft, 10, 0.09, 3.0, 26);
+  flute(core, 12, 0.07, 4, 38);
 
-  const collar = (r: number, y: number) =>
-    translated(new THREE.TorusGeometry(r, 0.14, 6, 24).rotateX(Math.PI / 2), 0, y, 0);
-
-  return mergeGeometries([
-    translated(new THREE.CylinderGeometry(3.2, 3.5, 0.6, 8), 0, 0.3, 0),
-    translated(new THREE.CylinderGeometry(2.6, 3.0, 0.7, 8), 0, 0.95, 0),
-    shaft,
-    collar(1.78, 5.5),
-    collar(1.62, 14),
-    collar(1.74, 22.5),
-    translated(new THREE.CylinderGeometry(3.4, 2.2, 1.6, 8), 0, 28.4, 0),
-    translated(new THREE.BoxGeometry(5.6, 0.9, 5.6), 0, 29.55, 0),
-  ])!;
+  const parts: THREE.BufferGeometry[] = [
+    translated(new THREE.CylinderGeometry(3.8, 4.2, 0.7, 8), 0, 0.35, 0),
+    translated(new THREE.CylinderGeometry(3.0, 3.4, 0.8, 8), 0, 1.1, 0),
+    core,
+    translated(new THREE.CylinderGeometry(4.6, 3.0, 2.2, 8), 0, 41.5, 0),
+    translated(new THREE.BoxGeometry(7.0, 1.0, 7.0), 0, 43.5, 0),
+  ];
+  // Four engaged colonnettes on the diagonals — the clustered-pier read.
+  for (let i = 0; i < 4; i++) {
+    const a = Math.PI / 4 + (i * Math.PI) / 2;
+    parts.push(
+      translated(
+        new THREE.CylinderGeometry(0.52, 0.6, 37, 10),
+        Math.cos(a) * 2.05,
+        20,
+        Math.sin(a) * 2.05,
+      ),
+    );
+  }
+  // Rings bind core and colonnettes into one shaft.
+  for (const ry of [12, 24, 34]) {
+    parts.push(
+      translated(new THREE.TorusGeometry(2.45, 0.18, 6, 20).rotateX(Math.PI / 2), 0, ry, 0),
+    );
+  }
+  return mergeGeometries(parts)!;
 }
 
 /** The severe obelisk: two interpenetrating four-sided frustums (an
  *  eight-point bevelled cross-section), stepped base, collar and tip. */
 function grandObeliskGeometry(): THREE.BufferGeometry {
   return mergeGeometries([
-    translated(new THREE.BoxGeometry(4.4, 0.8, 4.4), 0, 0.4, 0),
-    translated(new THREE.BoxGeometry(3.6, 0.8, 3.6), 0, 1.1, 0),
-    translated(new THREE.CylinderGeometry(1.35, 2.3, 26, 4).rotateY(Math.PI / 4), 0, 14.5, 0),
-    translated(new THREE.CylinderGeometry(1.2, 2.1, 26, 4), 0, 14.5, 0),
-    translated(new THREE.BoxGeometry(3.0, 0.5, 3.0), 0, 27.75, 0),
-    translated(new THREE.CylinderGeometry(0.9, 1.6, 2.0, 4).rotateY(Math.PI / 4), 0, 29.0, 0),
+    translated(new THREE.BoxGeometry(5.0, 0.9, 5.0), 0, 0.45, 0),
+    translated(new THREE.BoxGeometry(4.2, 0.9, 4.2), 0, 1.3, 0),
+    translated(new THREE.CylinderGeometry(1.4, 2.5, 38, 4).rotateY(Math.PI / 4), 0, 20.7, 0),
+    translated(new THREE.CylinderGeometry(1.25, 2.3, 38, 4), 0, 20.7, 0),
+    translated(new THREE.BoxGeometry(3.4, 0.6, 3.4), 0, 40.0, 0),
+    translated(new THREE.CylinderGeometry(0.9, 1.7, 3.4, 4).rotateY(Math.PI / 4), 0, 42.0, 0),
   ])!;
 }
 
-/** Shattered pillar stump: the plinths survive, the fluted shaft breaks off
- *  a few metres up. */
+/** Shattered pier stump: the plinths survive, the fluted core breaks off a
+ *  few metres up; the colonnettes are gone with the fall. */
 function stumpGeometry(): THREE.BufferGeometry {
   const broken = new THREE.LatheGeometry(
     [
-      new THREE.Vector2(2.4, 1.2),
-      new THREE.Vector2(1.8, 2.6),
-      new THREE.Vector2(1.45, 3.4),
-      new THREE.Vector2(1.0, 3.9),
+      new THREE.Vector2(2.6, 1.5),
+      new THREE.Vector2(2.0, 3.0),
+      new THREE.Vector2(1.7, 4.0),
+      new THREE.Vector2(1.2, 4.6),
     ],
     20,
   );
-  flute(broken, 10, 0.09, 1.4, 3.9);
+  flute(broken, 12, 0.07, 1.6, 4.6);
   return mergeGeometries([
-    translated(new THREE.CylinderGeometry(3.2, 3.5, 0.6, 8), 0, 0.3, 0),
-    translated(new THREE.CylinderGeometry(2.6, 3.0, 0.7, 8), 0, 0.95, 0),
+    translated(new THREE.CylinderGeometry(3.8, 4.2, 0.7, 8), 0, 0.35, 0),
+    translated(new THREE.CylinderGeometry(3.0, 3.4, 0.8, 8), 0, 1.1, 0),
     broken,
   ])!;
 }
 
-/** Coffered ceiling tile (8 × 8 m, hung at the hall height): a deep frame
- *  and cross-ribs around recessed panels — carved, not poured. */
+/** Vault-bay ceiling tile (8 × 8 m, hung at the vault line): a deep frame
+ *  and chunky cross-ribs around recessed panels — carved, not poured. */
 function cofferGeometry(): THREE.BufferGeometry {
   return mergeGeometries([
-    translated(new THREE.BoxGeometry(8, 0.7, 1.4), 0, -0.35, 3.3),
-    translated(new THREE.BoxGeometry(8, 0.7, 1.4), 0, -0.35, -3.3),
-    translated(new THREE.BoxGeometry(1.4, 0.7, 5.2), 3.3, -0.35, 0),
-    translated(new THREE.BoxGeometry(1.4, 0.7, 5.2), -3.3, -0.35, 0),
-    translated(new THREE.BoxGeometry(8, 0.45, 0.7), 0, -0.225, 0),
-    translated(new THREE.BoxGeometry(0.7, 0.45, 8), 0, -0.225, 0),
-    translated(new THREE.BoxGeometry(7.6, 0.25, 7.6), 0, -0.125, 0),
+    translated(new THREE.BoxGeometry(8, 1.2, 1.4), 0, -0.6, 3.3),
+    translated(new THREE.BoxGeometry(8, 1.2, 1.4), 0, -0.6, -3.3),
+    translated(new THREE.BoxGeometry(1.4, 1.2, 5.2), 3.3, -0.6, 0),
+    translated(new THREE.BoxGeometry(1.4, 1.2, 5.2), -3.3, -0.6, 0),
+    translated(new THREE.BoxGeometry(8, 0.8, 0.9), 0, -0.4, 0),
+    translated(new THREE.BoxGeometry(0.9, 0.8, 8), 0, -0.4, 0),
+    translated(new THREE.BoxGeometry(7.6, 0.3, 7.6), 0, -0.15, 0),
+  ])!;
+}
+
+/** Gothic buttress: stepped masses with sloped caps and a strut flying up
+ *  toward the wall head. Local -z faces the wall it serves. */
+function buttressGeometry(): THREE.BufferGeometry {
+  return mergeGeometries([
+    translated(new THREE.BoxGeometry(1.7, 12, 1.5), 0, 6, 0.95),
+    translated(new THREE.BoxGeometry(1.7, 1.6, 1.7).rotateX(-0.5), 0, 12.4, 0.9),
+    translated(new THREE.BoxGeometry(1.4, 11, 1.1), 0, 17.5, 0.75),
+    translated(new THREE.BoxGeometry(1.4, 1.4, 1.4).rotateX(-0.5), 0, 23.4, 0.7),
+    translated(new THREE.BoxGeometry(1.1, 11, 0.8), 0, 28.5, 0.55),
+    translated(new THREE.BoxGeometry(0.7, 9, 0.6).rotateX(0.42), 0, 37.5, 0.35),
   ])!;
 }
 
@@ -224,6 +253,13 @@ export function createHallPools(scene: THREE.Scene): HallPools {
     receiveShadow: true,
   });
 
+  const buttress = new InstancePool(
+    buttressGeometry(),
+    masonryMaterial(0x202329, 0.55),
+    1200,
+    { castShadow: true, receiveShadow: true },
+  );
+
   const bole = new InstancePool(
     grandBoleGeometry(),
     carvedGraniteMaterial(0x3a3d44, 0.78),
@@ -288,23 +324,8 @@ export function createHallPools(scene: THREE.Scene): HallPools {
   flameGeo.translate(0, 0.3, 0);
   const flame = new InstancePool(flameGeo, flameMaterial(), 700);
 
-  // Daylight shaft beam: fake volumetrics — an additive open cylinder whose
-  // opacity fades down its length via a TSL gradient. Costs zero real
-  // lights, so shaft count never touches the lighting budget.
-  const beamGeo = new THREE.CylinderGeometry(2.0, 2.7, HALL_HEIGHT, 16, 1, true);
-  beamGeo.translate(0, HALL_HEIGHT / 2, 0);
-  const beamMat = new THREE.MeshBasicNodeMaterial({
-    color: 0x8fb8ff,
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  });
-  beamMat.opacityNode = mix(float(0.03), float(0.2), positionGeometry.y.div(HALL_HEIGHT));
-  const beam = new InstancePool(beamGeo, beamMat, 160);
-
-  // Pool of light where a shaft strikes the floor; white material so each
-  // instance tints it — blue daylight, red magma.
+  // Pool of light where light strikes the floor; white material so each
+  // instance tints it — pale moonlight under breaches, red magma.
   const glowGeo = new THREE.CircleGeometry(3.4, 24);
   glowGeo.rotateX(-Math.PI / 2);
   glowGeo.translate(0, 0.03, 0);
@@ -348,6 +369,7 @@ export function createHallPools(scene: THREE.Scene): HallPools {
     grate,
     mithril,
     slab,
+    buttress,
     bole,
     obelisk,
     stump,
@@ -357,7 +379,6 @@ export function createHallPools(scene: THREE.Scene): HallPools {
     chest,
     bracket,
     flame,
-    beam,
     glow,
     fissure,
     magmaGlow,

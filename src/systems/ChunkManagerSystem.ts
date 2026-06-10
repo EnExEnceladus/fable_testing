@@ -4,7 +4,7 @@ import { addComponent, addEntity, query, removeEntity, type World } from 'bitecs
 import { Chunk, Player, Position, RigidBody } from '../components';
 import type { InstancePool } from '../chunks/InstancePool';
 import { createHallPools } from '../chunks/pools';
-import { registerTorch, unregisterTorch } from '../chunks/torchRegistry';
+import { registerLight, unregisterLight } from '../chunks/torchRegistry';
 import {
   biomeFor,
   CHUNK_SIZE,
@@ -18,14 +18,15 @@ import {
 const LOAD_RADIUS = 3; // chunks; 3 × 32 m = 96 m — past the fog wall, so pop-in is invisible
 const UNLOAD_RADIUS = 4; // hysteresis ring: no load/unload thrash while straddling a seam
 const MAX_LOADS_PER_TICK = 2; // amortise generation so a ring of new chunks never spikes a frame
-const WALL_THICKNESS = 1.2;
+const WALL_THICKNESS = 1.6; // cathedral walls
+const BUTTRESS_SPACING = 8.5;
 
 /** Per-chunk bookkeeping that cannot live in SoA components: which pool
- *  slots and torch registrations the chunk owns. The Rapier body travels on
+ *  slots and light registrations the chunk owns. The Rapier body travels on
  *  the chunk entity's RigidBody component like every other physical entity. */
 interface ChunkRecord {
   allocations: Array<[InstancePool, number]>;
-  torchIds: number[];
+  lightIds: number[];
 }
 
 /**
@@ -60,7 +61,7 @@ export function createChunkManagerSystem(physics: RAPIER.World, scene: THREE.Sce
     const body = physics.createRigidBody(RAPIER.RigidBodyDesc.fixed());
     RigidBody.handle[eid] = body.handle;
 
-    const record: ChunkRecord = { allocations: [], torchIds: [] };
+    const record: ChunkRecord = { allocations: [], lightIds: [] };
     records.set(eid, record);
     loadedByKey.set(`${cx},${cz}`, eid);
 
@@ -127,7 +128,7 @@ export function createChunkManagerSystem(physics: RAPIER.World, scene: THREE.Sce
       runeTile: (x, z) => place(pools.rune, x, 0, z, 1, 1, 1),
       grate: (x, z) => place(pools.grate, x, 0, z, 1, 1, 1),
       mithrilVein: (x, z, yaw, length) => place(pools.mithril, x, 0, z, 1, 1, length, yaw),
-      wall: (x, z, length, axis, height = HALL_HEIGHT, y = 0) => {
+      wall: (x, z, length, axis, height = HALL_HEIGHT, y = 0, buttress = true) => {
         if (length <= 0) return;
         const alongX = axis === 'x';
         const cxm = x + (alongX ? length / 2 : 0);
@@ -149,19 +150,40 @@ export function createChunkManagerSystem(physics: RAPIER.World, scene: THREE.Sce
           height / 2,
           (alongX ? WALL_THICKNESS : length) / 2,
         );
+        // Gothic buttressing on both faces of long full-height walls. The
+        // buttress geometry's -z points at the wall it serves.
+        if (!buttress || height < HALL_HEIGHT || length < 10) return;
+        const face = WALL_THICKNESS / 2;
+        for (let t = 4.5; t < length - 2.5; t += BUTTRESS_SPACING) {
+          for (const side of [1, -1]) {
+            const bx = alongX ? x + t : x + face * side;
+            const bz = alongX ? z + face * side : z + t;
+            const yaw = alongX ? (side > 0 ? 0 : Math.PI) : (side > 0 ? Math.PI / 2 : -Math.PI / 2);
+            place(pools.buttress, bx, 0, bz, 1, 1, 1, yaw);
+            collide(
+              bx + Math.sin(yaw) * 0.95,
+              8,
+              bz + Math.cos(yaw) * 0.95,
+              0.85,
+              8,
+              0.85,
+            );
+          }
+        }
       },
       boleColumn: (x, z, girth) => {
         place(pools.bole, x, 0, z, girth, 1, girth, 0, 0, tint.setScalar(0.85 + girth * 0.15));
-        // Wide enough to keep the capsule off the plinth steps.
-        collide(x, HALL_HEIGHT / 2, z, 2.4 * girth, HALL_HEIGHT / 2, 2.4 * girth);
+        // Wide enough to keep the capsule off the plinth steps and the
+        // engaged colonnettes.
+        collide(x, HALL_HEIGHT / 2, z, 2.8 * girth, HALL_HEIGHT / 2, 2.8 * girth);
       },
       obeliskColumn: (x, z, girth) => {
         place(pools.obelisk, x, 0, z, girth, 1, girth, 0, 0, tint.setScalar(0.85 + girth * 0.15));
-        collide(x, HALL_HEIGHT / 2, z, 2.2 * girth, HALL_HEIGHT / 2, 2.2 * girth);
+        collide(x, HALL_HEIGHT / 2, z, 2.5 * girth, HALL_HEIGHT / 2, 2.5 * girth);
       },
       brokenColumn: (x, z, girth, lean, yaw) => {
         place(pools.stump, x, 0, z, girth, 1, girth, yaw, lean, tint.setScalar(0.9));
-        collide(x, 1.9, z, 2.4 * girth, 1.9, 2.4 * girth);
+        collide(x, 2.3, z, 2.8 * girth, 2.3, 2.8 * girth);
       },
       rubble: (x, z, size, squash, yaw, shade) =>
         place(pools.rubble, x, 0, z, size, size * squash, size * 0.85, yaw, 0, tint.setScalar(0.03 + shade * 0.08)),
@@ -170,11 +192,48 @@ export function createChunkManagerSystem(physics: RAPIER.World, scene: THREE.Sce
       torch: (x, z, yaw) => {
         place(pools.bracket, x, 3.9, z, 1, 1, 1, yaw);
         place(pools.flame, x, 4.12, z, 1, 1, 1);
-        record.torchIds.push(registerTorch(ox + x, 4.55, oz + z));
+        record.lightIds.push(registerLight(ox + x, 4.55, oz + z, 0xff8636, 85, 22, 1));
       },
-      lightShaft: (x, z, pitch = 0, yaw = 0) => {
-        place(pools.beam, x, 0, z, 1, 1, 1, yaw, pitch);
-        place(pools.glow, x, 0, z, 1, 1, 1, 0, 0, tint.setHex(0x4a6fa8));
+      ceilingBreach: (x, z) => {
+        // Jagged rim hanging at the wound's edge (deterministic golden-angle
+        // ring — no rng needed for organic spread).
+        for (let i = 0; i < 9; i++) {
+          const a = i * 2.4;
+          const r = 4.1 + (i % 3) * 0.5;
+          place(
+            pools.rubble,
+            x + Math.cos(a) * r,
+            HALL_HEIGHT - 0.7,
+            z + Math.sin(a) * r,
+            1.1 + (i % 4) * 0.35,
+            0.9,
+            1.3,
+            a,
+            0.3,
+            tint.setScalar(0.07 + (i % 3) * 0.03),
+          );
+        }
+        // The fallen vault, heaped on the floor below.
+        for (let i = 0; i < 7; i++) {
+          const a = i * 2.4 + 1.2;
+          const r = (i % 4) * 1.1;
+          place(
+            pools.rubble,
+            x + Math.cos(a) * r,
+            0,
+            z + Math.sin(a) * r,
+            0.8 + (i % 3) * 0.55,
+            0.55 + (i % 2) * 0.35,
+            1,
+            a,
+            0,
+            tint.setScalar(0.08 + (i % 3) * 0.04),
+          );
+        }
+        // Faint moonlight: a pale pool on the floor and a steady cool light
+        // hung in the opening's throw.
+        place(pools.glow, x, 0, z, 1.6, 1, 1.6, 0, 0, tint.setHex(0x8aa3cf));
+        record.lightIds.push(registerLight(ox + x, 14, oz + z, 0x9db4dd, 55, 38, 0));
       },
       stoneDoor: (x, z, yaw) => {
         place(pools.slab, x, 0, z, 4.6, 6, 0.5, yaw);
@@ -203,7 +262,7 @@ export function createChunkManagerSystem(physics: RAPIER.World, scene: THREE.Sce
     const record = records.get(eid);
     if (record) {
       for (const [pool, slot] of record.allocations) pool.release(slot);
-      for (const id of record.torchIds) unregisterTorch(id);
+      for (const id of record.lightIds) unregisterLight(id);
       records.delete(eid);
     }
     loadedByKey.delete(`${Chunk.x[eid]},${Chunk.z[eid]}`);

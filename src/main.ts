@@ -16,14 +16,14 @@ import {
   durinsBridge,
   mazarbulChamber,
   registerLandmark,
-  spawnShaftHall,
+  spawnHall,
 } from './chunks/worldgen';
 import { createCameraSystem } from './systems/CameraSystem';
 import { createChunkManagerSystem } from './systems/ChunkManagerSystem';
 import { createInputSystem } from './systems/InputSystem';
 import { createPhysicsSystem } from './systems/PhysicsSystem';
 import { createPlayerMovementSystem } from './systems/PlayerMovementSystem';
-import { createRenderSystem, setupAtmosphere } from './systems/RenderSystem';
+import { createNightSky, createRenderSystem, setupAtmosphere } from './systems/RenderSystem';
 import { createTorchLightSystem } from './systems/TorchLightSystem';
 
 async function main(): Promise<void> {
@@ -48,6 +48,7 @@ async function main(): Promise<void> {
   );
 
   setupAtmosphere(scene);
+  const sky = createNightSky(scene);
 
   window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -88,14 +89,15 @@ async function main(): Promise<void> {
   }
 
   // Floors and their colliders stream in via the ChunkManagerSystem.
-  // Landmarks near spawn: the shaft hall at origin, the Chamber of Mazarbul
-  // 64 m east, and Durin's Bridge over the Black Chasm 128 m north (-Z),
-  // past the biome shift into the Lower Deeps.
-  registerLandmark(0, 0, spawnShaftHall);
+  // Landmarks near spawn: the breached hall at origin, the Chamber of
+  // Mazarbul 64 m east, and Durin's Bridge over the Black Chasm 128 m
+  // north (-Z), past the biome shift into the Lower Deeps.
+  registerLandmark(0, 0, spawnHall);
   registerLandmark(2, 0, mazarbulChamber);
   registerLandmark(0, -4, durinsBridge);
 
-  // A lone cube suspended in the dark — falls through the spawn shaft.
+  // A lone cube suspended in the dark — falls through the breach's
+  // moonlight at (12, 12).
   const cube = new THREE.Mesh(
     new THREE.BoxGeometry(1, 1, 1),
     new THREE.MeshStandardMaterial({ color: 0x6b6b75, roughness: 0.6 }),
@@ -104,7 +106,7 @@ async function main(): Promise<void> {
   cube.receiveShadow = true;
   spawn(
     cube,
-    RAPIER.RigidBodyDesc.dynamic().setTranslation(0, 8, 0),
+    RAPIER.RigidBodyDesc.dynamic().setTranslation(12, 8, 12),
     RAPIER.ColliderDesc.cuboid(0.5, 0.5, 0.5),
   );
 
@@ -112,19 +114,20 @@ async function main(): Promise<void> {
   // Dynamic capsule with rotations locked so physics can't tip it over.
   // No linear damping: stopping is handled in PlayerMovementSystem so that
   // gravity stays untouched and chasm falls accelerate for real.
+  // Spawn south of the breach, facing the moonlight (yaw 0 looks down -Z).
   const playerBody = physics.createRigidBody(
-    RAPIER.RigidBodyDesc.dynamic().setTranslation(0, 1.4, 8),
+    RAPIER.RigidBodyDesc.dynamic().setTranslation(12, 1.4, 26),
   );
   playerBody.lockRotations(true, true);
   physics.createCollider(RAPIER.ColliderDesc.capsule(0.75, 0.5), playerBody);
 
   // The player's torch: a tight warm cone that the CameraSystem keeps glued
   // to the camera every frame.
-  const flashlight = new THREE.SpotLight(0xffe2b0, 600);
+  const flashlight = new THREE.SpotLight(0xffe2b0, 700);
   flashlight.angle = Math.PI / 6;
   flashlight.penumbra = 0.5;
   flashlight.decay = 1.8;
-  flashlight.distance = 45;
+  flashlight.distance = 62; // reaches the 44 m vaults when raised
   flashlight.castShadow = true;
   flashlight.shadow.mapSize.set(2048, 2048);
   scene.add(flashlight, flashlight.target);
@@ -157,7 +160,7 @@ async function main(): Promise<void> {
   const physicsSystem = createPhysicsSystem(physics);
   const cameraSystem = createCameraSystem(camera, physics);
   const torchLightSystem = createTorchLightSystem(scene);
-  const renderSystem = createRenderSystem(renderer, scene, camera);
+  const renderSystem = createRenderSystem(renderer, scene, camera, sky);
 
   function loop(): void {
     inputSystem(world);
