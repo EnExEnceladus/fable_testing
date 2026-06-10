@@ -1,8 +1,21 @@
 import * as THREE from 'three/webgpu';
 import * as RAPIER from '@dimforge/rapier3d-compat';
 import { addComponent, addEntity, createWorld } from 'bitecs';
-import { Position, Renderable, registerMesh, RigidBody } from './components';
+import {
+  Flashlight,
+  HeadBob,
+  Input,
+  Player,
+  Position,
+  Renderable,
+  registerMesh,
+  registerSpotLight,
+  RigidBody,
+} from './components';
+import { createCameraSystem } from './systems/CameraSystem';
+import { createInputSystem } from './systems/InputSystem';
 import { createPhysicsSystem } from './systems/PhysicsSystem';
+import { createPlayerMovementSystem } from './systems/PlayerMovementSystem';
 import { createRenderSystem, setupAtmosphere } from './systems/RenderSystem';
 
 async function main(): Promise<void> {
@@ -22,8 +35,6 @@ async function main(): Promise<void> {
     0.1,
     200,
   );
-  camera.position.set(0, 4, 14);
-  camera.lookAt(0, 2, 0);
 
   setupAtmosphere(scene);
 
@@ -90,12 +101,59 @@ async function main(): Promise<void> {
     RAPIER.ColliderDesc.cuboid(0.5, 0.5, 0.5),
   );
 
+  // --- Player ---
+  // Dynamic capsule with rotations locked so physics can't tip it over, and
+  // high linear damping so releasing the keys stops the walk dead.
+  const playerBody = physics.createRigidBody(
+    RAPIER.RigidBodyDesc.dynamic().setTranslation(0, 1.4, 8).setLinearDamping(10),
+  );
+  playerBody.lockRotations(true, true);
+  physics.createCollider(RAPIER.ColliderDesc.capsule(0.75, 0.5), playerBody);
+
+  // The player's torch: a tight warm cone that the CameraSystem keeps glued
+  // to the camera every frame.
+  const flashlight = new THREE.SpotLight(0xffe2b0, 600);
+  flashlight.angle = Math.PI / 6;
+  flashlight.penumbra = 0.5;
+  flashlight.decay = 1.8;
+  flashlight.distance = 45;
+  flashlight.castShadow = true;
+  flashlight.shadow.mapSize.set(1024, 1024);
+  scene.add(flashlight, flashlight.target);
+
+  const player = addEntity(world);
+  addComponent(world, player, Player);
+  addComponent(world, player, Input);
+  addComponent(world, player, HeadBob);
+  addComponent(world, player, Flashlight);
+  addComponent(world, player, Position);
+  addComponent(world, player, RigidBody);
+
+  const pt = playerBody.translation();
+  Position.x[player] = pt.x;
+  Position.y[player] = pt.y;
+  Position.z[player] = pt.z;
+  Input.x[player] = 0;
+  Input.z[player] = 0;
+  Input.pitch[player] = 0;
+  Input.yaw[player] = 0; // facing -Z, toward the falling cube
+  HeadBob.timer[player] = 0;
+  HeadBob.intensity[player] = 0.05;
+  Flashlight.lightId[player] = registerSpotLight(flashlight);
+  RigidBody.handle[player] = playerBody.handle;
+
   // --- Main loop ---
+  const inputSystem = createInputSystem(renderer.domElement);
+  const playerMovementSystem = createPlayerMovementSystem(physics);
   const physicsSystem = createPhysicsSystem(physics);
+  const cameraSystem = createCameraSystem(camera, physics);
   const renderSystem = createRenderSystem(renderer, scene, camera);
 
   function loop(): void {
+    inputSystem(world);
+    playerMovementSystem(world);
     physicsSystem(world);
+    cameraSystem(world);
     renderSystem(world);
     requestAnimationFrame(loop);
   }
